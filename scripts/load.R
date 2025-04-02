@@ -7,8 +7,8 @@ load("data/pdac_ctype.RData")
 load("data/pdac_siglec.RData")
 
 str(total5)
+levels(total5@active.ident) # Cell typeの可視化
 
-total4
 
 
 rownames(total5) %>% head()
