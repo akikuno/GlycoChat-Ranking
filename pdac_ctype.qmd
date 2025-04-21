@@ -1,5 +1,5 @@
 ---
-title: "PDACデータセットにおけるGlycan特異性分析"
+title: "Glycan Specificity Analysis in the PDAC Dataset"
 author: "Akihiro Kuno"
 date: "2025-04-18"
 format: 
@@ -8,9 +8,6 @@ format:
         code-fold: true
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
 
 ```{r libraries}
 library(Seurat)
@@ -22,120 +19,63 @@ library(tidyverse)
 load("data/pdac_ctype.RData")
 ```
 
-## データ閲覧
-
-```{r glycan-rna-data}
-# 細胞型の確認
-print("利用可能な細胞型:")
-levels(total5@active.ident)
-
-# データの確認
-print("Glycanデータの次元:")
-dim(total5[["glycan"]]$data)
-print("Glycanの例:")
-head(rownames(total5[["glycan"]]$data))
-```
-
-## 発現特異性の評価
+## Expression Specificity Functions
 
 ```{r specificity-functions}
-# 細胞型ごとの平均値を計算する関数
-calculate_mean_by_celltype <- function(vector_by_celltype) {
-    # ベクトルから細胞型の名前を抽出
-    cell_types <- names(vector_by_celltype)
-    
-    # ユニークな細胞型を取得
-    unique_cell_types <- unique(cell_types)
-    
-    # 結果を格納するためのベクトルを初期化
-    result <- numeric(length(unique_cell_types))
-    names(result) <- unique_cell_types
-    
-    # 各細胞型について平均値を計算
-    for (ct in unique_cell_types) {
-        # その細胞型に対応する値を抽出
-        values <- vector_by_celltype[cell_types == ct]
-        
-        # 平均値を計算して結果に格納
-        result[ct] <- mean(values, na.rm = TRUE)
-    }
-    
-    return(result)
+
+# Calculate mean expression/binding per cell type
+calculate_mean_by_celltype <- function(values) {
+    cell_types <- names(values)
+    tapply(values, cell_types, mean, na.rm = TRUE)
 }
 
-# 特異性を計算する関数 - 1つの細胞種での高発現を重視
+# Calculate a specificity score emphasizing single-cell type expression
 calculate_specificity <- function(values_by_celltype) {
-    # 基本の変動係数
+    # Basic coefficient of variation
     cv <- sd(values_by_celltype, na.rm = TRUE) / mean(values_by_celltype, na.rm = TRUE)
     
-    # 最大値と次に高い値の比率を計算
-    sorted_values <- sort(values_by_celltype, decreasing = TRUE, na.last = TRUE)
-    if (length(sorted_values) >= 2 && !is.na(sorted_values[2]) && sorted_values[2] > 0) {
-        max_to_second_ratio <- sorted_values[1] / sorted_values[2]
+    # Calculate the ratio of the maximum value to the second highest value
+    max_to_second <- if (length(sorted_values) >= 2 && sorted_values[2] > 0) {
+        sorted_values[1] / sorted_values[2]
+    } else if (sorted_values[1] == 0 || is.na(sorted_values[1])) {
+        1
     } else {
-        max_to_second_ratio <- ifelse(is.na(sorted_values[1]) || sorted_values[1] == 0, 1, Inf)
+        Inf
     }
     
-    # 複合スコア：単一細胞種特異性を重視
-    specificity_score <- cv * (0.3 + 0.7 * min(max_to_second_ratio / 5, 1))
-    
-    return(specificity_score)
+    return(cv * (0.3 + 0.7 * min(max_to_second / 5, 1)))
 }
 
-# がん細胞と免疫細胞の特異性スコアを計算する関数
-calculate_cancer_immune_specificity <- function(values_by_celltype, cancer_cells, immune_cells) {
-    # がん細胞と免疫細胞の両方が存在するか確認
-    if (!all(c(immune_cells, cancer_cells) %in% names(values_by_celltype))) {
-        return(calculate_specificity(values_by_celltype))
-    }
-    
-    # がん細胞の中での特異性を計算
-    cancer_values <- values_by_celltype[cancer_cells]
-    cancer_spec_score <- calculate_specificity(cancer_values)
-    
-    # 免疫細胞の中での特異性を計算
+# Specificity within immune cell types only
+calculate_immune_specificity <- function(values_by_celltype, immune_cells) {
     immune_values <- values_by_celltype[immune_cells]
-    immune_spec_score <- calculate_specificity(immune_values)
-    
-    # がん細胞と免疫細胞の最大値を比較
-    max_cancer_value <- max(cancer_values, na.rm = TRUE)
-    max_immune_value <- max(immune_values, na.rm = TRUE)
-    
-    # 単一細胞種特異性評価
-    if (max_cancer_value > 0 && max_immune_value > 0) {
-        max_to_second_overall <- max(max_cancer_value, max_immune_value) / min(max_cancer_value, max_immune_value)
-    } else if (max_cancer_value > 0 || max_immune_value > 0) {
-        max_to_second_overall <- Inf
-    } else {
-        max_to_second_overall <- 1
-    }
-    
-    # 最終的な特異性スコア（単一細胞種特異性に高い重みづけ）
-    combined_spec_score <- (0.2 * cancer_spec_score + 0.2 * immune_spec_score + 
-                            0.6 * min(max_to_second_overall / 3, 1))
-    
-    return(combined_spec_score)
+    return(calculate_specificity(immune_values))
 }
 
-# 単一細胞種での高発現を特定する関数
-identify_top_cell_type <- function(values_by_celltype) {
+# Specificity within cancer cell types only
+calculate_cancer_specificity <- function(values_by_celltype, cancer_cells) {
+    cancer_values <- values_by_celltype[cancer_cells]
+    return(calculate_specificity(cancer_values))
+}
 
-    # NAを含まない値を抽出
+# Identify the top expressing/binding cell type and specificity ratio
+identify_top_cell_type <- function(values_by_celltype) {
+    # Extract values without NA
     valid_values <- values_by_celltype[!is.na(values_by_celltype)]
     
-    # 有効な値がない場合
+    # If no valid values exist
     if (length(valid_values) == 0) {
         return(list(
-        top_cell_type = "None",
-        max_value = 0,
-        max_to_second_ratio = 0
+            top_cell_type = "None",
+            max_value = 0,
+            max_to_second_ratio = 0
         ))
     }
-    # 最大値を持つ細胞種
+    # Cell type with the maximum value
     max_cell_type <- names(values_by_celltype)[which.max(values_by_celltype)]
     max_value <- max(values_by_celltype, na.rm = TRUE)
     
-    # 二番目に高い値との比率
+    # Ratio to the second highest value
     sorted_values <- sort(values_by_celltype, decreasing = TRUE, na.last = TRUE)
     if (length(sorted_values) >= 2 && !is.na(sorted_values[2])) {
         max_to_second_ratio <- max_value / sorted_values[2]
@@ -151,62 +91,60 @@ identify_top_cell_type <- function(values_by_celltype) {
 }
 ```
 
-## RNA発現とGlycanバインディングのスコアを計算する関数を定義
+## Define Functions to Calculate RNA Expression and Glycan Binding Scores
 
-```{r score-glycans}
-# RNA発現スコアを計算する関数
-calculate_rna_scores <- function(gene_expr, cell_types, weight_cell_spec_rna, weight_expr_level_rna, max_expr) {
-    # 細胞型ごとの発現を計算
-    expr_by_celltype <- calculate_mean_by_celltype(gene_expr)
-    
-    # 発現特異性を計算
-    cv_expr <- calculate_specificity(expr_by_celltype)
+```{r scoreing}
 
-    # スコアの計算
-    rna_spec_score <- cv_expr * weight_cell_spec_rna
-    rna_expr_score <- (mean(gene_expr, na.rm = TRUE) / max_expr) * weight_expr_level_rna
-    
-    return(list(
-        spec_score = rna_spec_score,
-        expr_score = rna_expr_score
-    ))
+# RNA score calculation for immune cells
+calculate_rna_scores <- function(gene_expr, cell_types, immune_cells) {
+
+    # Calculate the specificy of expression level for immune cells
+    expr_by_type <- calculate_mean_by_celltype(gene_expr)
+    spec_score <- calculate_immune_specificity(expr_by_type, immune_cells)
+
+    # Calculate the mean expression level for immune cells
+    immune_values <- gene_vec[cell_types %in% immune_cells]
+    expr_score <- log1p(mean(immune_values, na.rm = TRUE))
+
+    return(list(spec_score = spec_score, expr_score = expr_score))
 }
 
-# Glycanバインディングスコアを計算する関数
-calculate_glycan_scores <- function(glycan_binding, cell_types, cancer_cells, immune_cells, weight_cell_spec_glycan, weight_binding_level) {
-    # 細胞型ごとのバインディングを計算
-    glycan_by_celltype <- calculate_mean_by_celltype(glycan_binding)
-    
-    # がん細胞と免疫細胞の特異性を考慮したスコアを計算
-    cv_glycan <- calculate_cancer_immune_specificity(glycan_by_celltype, cancer_cells, immune_cells)
-    
-    # スコアの計算
-    glycan_spec_score <- cv_glycan * weight_cell_spec_glycan
-    glycan_binding_score <- (mean(glycan_binding, na.rm = TRUE) / max(glycan_binding, na.rm = TRUE)) * weight_binding_level
-    
-    return(list(
-        spec_score = glycan_spec_score,
-        binding_score = glycan_binding_score,
-        by_celltype = glycan_by_celltype
-    ))
+# Glycan score calculation for cancer cells
+calculate_glycan_scores <- function(binding, cell_types, cancer_cells) {
+
+    # Calculate the specificy of binding level for cancer cells
+    binding_by_type <- calculate_mean_by_celltype(binding)
+    spec_score <- calculate_cancer_specificity(binding_by_type, cancer_cells)
+
+    # Calculate the mean binding level for cancer cells
+    cancer_values <- binding_vec[cell_types %in% cancer_cells]
+    binding_score <- log1p(mean(cancer_values, na.rm = TRUE))
+    return(list(spec_score = spec_score, binding_score = binding_score, by_celltype = binding_by_type))
 }
 ```
 
-## Glycanランキング関数
+## Glycan Ranking Function
 
 ```{r glycan-ranking}
-# メイン関数：Glycanをスコアリングする
-score_glycans <- function(seurat_obj, weight_cell_spec_rna = 9, weight_expr_level_rna = 7, weight_cell_spec_glycan = 6, weight_binding_level = 7) {
+# Normalize vector to 0–1
+min_max_normalize <- function(x) {
+    rng <- range(x, na.rm = TRUE)
+    if (rng[1] == rng[2]) return(rep(0.5, length(x)))
+    (x - rng[1]) / (rng[2] - rng[1])
+}
+
+# Main function: Score Glycans
+score_glycans <- function(seurat_obj, cancer_cells, immune_cells, glycan_gene_mapping, weight_cell_spec_rna = 9, weight_expr_level_rna = 7, weight_cell_spec_glycan = 6, weight_binding_level = 7) {
     
-    # 細胞型情報を取得
+    # Get cell type information
     cell_types <- as.character(Idents(seurat_obj))
     
-    # データを取得
+    # Get data
     rna_data <- seurat_obj[["RNA"]]$data
     glycan_data <- seurat_obj[["glycan"]]$data
     glycan_list <- rownames(glycan_data)
     
-    # 結果を格納するデータフレーム
+    # Data frame to store results
     results <- data.frame(
         glycan = glycan_list, 
         rna_spec_score = 0, 
@@ -214,107 +152,81 @@ score_glycans <- function(seurat_obj, weight_cell_spec_rna = 9, weight_expr_leve
         glycan_spec_score = 0,
         glycan_binding_score = 0,
         total_score = 0,
-        top_cell_type_glycan = "",
-        max_to_second_ratio_glycan = 0,
-        top_cell_type_rna = "",
-        max_to_second_ratio_rna = 0,
+        top_cancer_cell_type_glycan = "",
+        top_immune_cell_type_rna = "",
         stringsAsFactors = FALSE
     )
     
-    # 細胞型の分類（実際のデータに合わせて調整）
-    immune_cells <- c("Naïve CD4+Tcell", "Effector/Memory CD4+Tcell", "Effector/Memory CD8+Tcell", "Exhausted CD8+Tcell", "M1-like TAM", "M2-like TAM", "MDSC", "cDC2", "B-cell", "pDC", "Mast cell", "Endothelial cell", "myCAF", "iCAF")
-    cancer_cells <- c("Classical", "Basal-like", "Intermediate")
-    
-    glycan_gene_mapping <- c(
-        "ASGR1.1" = "ASGR1",       # Asialoglycoprotein Receptor 1
-        "ASGR2.1" = "ASGR2",       # Asialoglycoprotein Receptor 2
-        "Langerin" = "CD207",      # Langerin/CD207
-        "Prolectin" = "CLEC17A",   # C-type Lectin Domain Family 17 Member A
-        "LSECtin" = "CLEC4G",      # C-type Lectin Domain Family 4 Member G
-        "DCSIGNR" = "CD209L",      # CD209 Antigen-Like Protein (別名CLEC4M)
-        "MINCLE" = "CLEC4E",       # C-type Lectin Domain Family 4 Member E
-        "DCIR" = "CLEC4A",         # C-type Lectin Domain Family 4 Member A
-        "Dectin1" = "CLEC7A",      # C-type Lectin Domain Family 7 Member A
-        "Dectin2" = "CLEC6A",      # C-type Lectin Domain Family 6 Member A
-        "Dectin3" = "CLEC4D",      # C-type Lectin Domain Family 4 Member D
-        "MDL1" = "CLEC5A",         # C-type Lectin Domain Family 5 Member A
-        "CD301" = "CLEC10A",       # C-type Lectin Domain Family 10 Member A（MGL）
-        "DCAL2" = "CLEC12A",       # C-type Lectin Domain Family 12 Member A
-        "CD370" = "CLEC9A",        # C-type Lectin Domain Family 9 Member A
-        "LOX1" = "OLR1",           # Oxidized Low Density Lipoprotein Receptor 1
-        "CLEC2" = "CLEC1B",        # C-type Lectin Domain Family 1 Member B
-        "MRC1.1" = "MRC1",         # Mannose Receptor C-Type 1
-        "CLEC2D.1" = "CLEC2D",     # C-type Lectin Domain Family 2 Member D
-        "L-Selectin" = "SELL",     # Selectin L
-        "P-Selectin" = "SELP",     # Selectin P
-        "E-Selectin" = "SELE",     # Selectin E
-        "ACE2.1" = "ACE2",         # Angiotensin I Converting Enzyme 2
-        "Neuropilin-1" = "NRP1"    # Neuropilin 1
-    )
-
-    # 最大発現値を計算（正規化）
-    max_expr_value <- max(rna_data, na.rm = TRUE)
-    
-    # 各glycanに対してスコアを計算
-    for (g in 1:length(glycan_list)) {
+    # Calculate scores for each glycan
+    for (i in seq_along(glycans)) {
         glycan <- glycan_list[g]
-        # glycanのバインディングデータを取得
+        # Get glycan binding data
         glycan_binding <- glycan_data[glycan, ]
         names(glycan_binding) <- cell_types
-        # 細胞型ごとのglycanバインディングを計算
+        # Calculate glycan binding by cell type
         glycan_by_celltype <- calculate_mean_by_celltype(glycan_binding)
         
-        # 最も高いバインディングを示す細胞種を特定
-        top_glycan_info <- identify_top_cell_type(glycan_by_celltype)
+        # Identify the cell type with the highest binding
+        top_glycan_info <- identify_top_cell_type(glycan_by_celltype[cancer_cells])
         
-        # glycanスコアを計算
-        glycan_scores <- calculate_glycan_scores(
-            glycan_binding, cell_types, cancer_cells, immune_cells,
-            weight_cell_spec_glycan, weight_binding_level
-        )
+        # Calculate glycan scores
+        glycan_scores <- calculate_glycan_scores(glycan_binding, cell_types, cancer_cells)
         
-        # 対応するRNA遺伝子の発現スコアを計算
-        gene_for_glycan <- glycan_gene_mapping[[glycan]] # 実際のマッピングに置き換え
+        # Calculate RNA expression scores for the corresponding gene
+        gene_for_glycan <- glycan_gene_mapping[[glycan]] # Replace with actual mapping
         top_rna_info <- list(top_cell_type = NA, max_to_second_ratio = NA)
         
-        # 対応する遺伝子がRNA assayに存在するか確認
+        # Check if the corresponding gene exists in the RNA assay
         if (gene_for_glycan %in% rownames(rna_data)) {
             gene_expr <- rna_data[gene_for_glycan, ]
             names(gene_expr) <- cell_types
-            # 細胞型ごとの遺伝子発現を計算
+            # Calculate gene expression by cell type
             expr_by_celltype <- calculate_mean_by_celltype(gene_expr)
             
-            # 最も高い発現を示す細胞種を特定
-            top_rna_info <- identify_top_cell_type(expr_by_celltype)
+            # Identify the cell type with the highest expression
+            top_rna_info <- identify_top_cell_type(expr_by_celltype[immune_cells])
             
-            rna_scores <- calculate_rna_scores(
-                gene_expr, cell_types, weight_cell_spec_rna, weight_expr_level_rna, max_expr_value
-            )
+            rna_scores <- calculate_rna_scores(gene_expr, cell_types, immune_cells)
             
             results$rna_spec_score[g] <- rna_scores$spec_score
             results$rna_expr_score[g] <- rna_scores$expr_score
         }
         
-        # glycanスコアを格納
+        # Store glycan scores
         results$glycan_spec_score[g] <- glycan_scores$spec_score
         results$glycan_binding_score[g] <- glycan_scores$binding_score
         
-        # 単一細胞種特異性の情報を格納
-        results$top_cell_type_glycan[g] <- top_glycan_info$top_cell_type
-        results$max_to_second_ratio_glycan[g] <- top_glycan_info$max_to_second_ratio
-        results$top_cell_type_rna[g] <- ifelse(is.na(top_rna_info$top_cell_type), "", top_rna_info$top_cell_type)
-        results$max_to_second_ratio_rna[g] <- ifelse(is.na(top_rna_info$max_to_second_ratio), 0, top_rna_info$max_to_second_ratio)
+        # Store single-cell type specificity information
+        results$top_cancer_cell_type_glycan[g] <- top_glycan_info$top_cell_type
+        results$top_immune_cell_type_rna[g] <- ifelse(is.na(top_rna_info$top_cell_type), "", top_rna_info$top_cell_type)
         
-        # 総合スコア計算 - 単一細胞種特異性を重視
-        single_cell_specificity_bonus <- min(top_glycan_info$max_to_second_ratio / 3, 1) * 2
-        results$total_score[g] <- results$rna_spec_score[g] + 
-                                                            results$rna_expr_score[g] + 
-                                                            results$glycan_spec_score[g] + 
-                                                            results$glycan_binding_score[g] +
-                                                            single_cell_specificity_bonus
+        results$total_score[g] <-
+            results$rna_spec_score[g] + 
+            results$rna_expr_score[g] + 
+            results$glycan_spec_score[g] + 
+            results$glycan_binding_score[g]
     }
     
-    # 総合スコアで降順にソート
+    # Normalize each component score using min-max normalization
+    results <- results %>%
+        mutate(
+            rna_spec_score = min_max_normalize(rna_spec_score),
+            rna_expr_score = min_max_normalize(rna_expr_score),
+            glycan_spec_score = min_max_normalize(glycan_spec_score),
+            glycan_binding_score = min_max_normalize(glycan_binding_score)
+        )
+
+    # Recalculate total_score using normalized scores and weights
+    weights <- c(rna_spec = weight_cell_spec_rna, rna_expr = weight_expr_level_rna, glycan_spec = weight_cell_spec_glycan, glycan_binding = weight_binding_level)
+    weights <- weights / sum(weights)
+
+    results$total_score <- 
+        weights["rna_spec"] * results$rna_spec_score +
+        weights["rna_expr"] * results$rna_expr_score +
+        weights["glycan_spec"] * results$glycan_spec_score +
+        weights["glycan_binding"] * results$glycan_binding_score
+
+    # Sort by total score in descending order
     results <- results %>% arrange(desc(total_score))
     
     return(results)
@@ -322,43 +234,79 @@ score_glycans <- function(seurat_obj, weight_cell_spec_rna = 9, weight_expr_leve
 ```
 
 ```{r plot}
-# スコア内訳の棒グラフ可視化
+# Bar plot of component scores for top glycans
 plot_top_glycans <- function(glycan_ranking, n = 10) {
-  n <- min(n, nrow(glycan_ranking))
-  top_n_glycans <- head(glycan_ranking, n)
-  
-  top_n_glycans_long <- top_n_glycans %>%
-    select(glycan, rna_spec_score, rna_expr_score, glycan_spec_score, glycan_binding_score) %>%
-    pivot_longer(cols = -glycan, names_to = "score_type", values_to = "score")
-  
-  ggplot(top_n_glycans_long, aes(x = reorder(glycan, -score, sum), y = score, fill = score_type)) +
-    geom_bar(stat = "identity") +
-    theme_minimal() +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-    labs(title = paste("Top", n, "Glycans Scoring Breakdown"),
-         x = "Glycan",
-         y = "Score",
-         fill = "Score Component") +
-    scale_fill_brewer(palette = "Set2", 
-                     labels = c("Glycan Binding Level", "Glycan Cell Specificity", 
-                               "RNA Expression Level", "RNA Cell Specificity"))
-}
+    n <- min(n, nrow(glycan_ranking))
+    top_n <- head(glycan_ranking, n)
 
+    top_long <- top_n %>%
+        select(glycan, rna_spec_score, rna_expr_score, glycan_spec_score, glycan_binding_score) %>%
+        pivot_longer(cols = -glycan, names_to = "score_type", values_to = "score")
+
+    ggplot(top_long, aes(x = reorder(glycan, -score, sum), y = score, fill = score_type)) +
+        geom_bar(stat = "identity") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        labs(title = paste("Top", n, "Glycans Scoring Breakdown"),
+            x = "Glycan", y = "Score", fill = "Score Component") +
+        scale_fill_brewer(palette = "Set2",
+                        labels = c("Glycan Binding Level", "Glycan Cell Specificity",
+                        "RNA Expression Level", "RNA Cell Specificity"))
+}
 ```
 
-## ランキングの実行
+
+## Execute Ranking
+
+```{r ranking-setup}
+# Classification of cell types (adjust according to actual data)
+cancer_cells <- c("Classical", "Basal-like", "Intermediate")
+
+immune_cells <- c("Naïve CD4+Tcell", "Effector/Memory CD4+Tcell", "Effector/Memory CD8+Tcell", "Exhausted CD8+Tcell", "M1-like TAM", "M2-like TAM", "MDSC", "cDC2", "B-cell", "pDC", "Mast cell", "Endothelial cell", "myCAF", "iCAF")
+
+glycan_gene_mapping <- c(
+"ASGR1.1" = "ASGR1",
+"ASGR2.1" = "ASGR2",
+"Langerin" = "CD207",
+"Prolectin" = "CLEC17A",
+"LSECtin" = "CLEC4G",
+"DCSIGNR" = "CD209L",
+"MINCLE" = "CLEC4E",
+"DCIR" = "CLEC4A",
+"Dectin1" = "CLEC7A",
+"Dectin2" = "CLEC6A",
+"Dectin3" = "CLEC4D",
+"MDL1" = "CLEC5A",
+"CD301" = "CLEC10A",
+"DCAL2" = "CLEC12A",
+"CD370" = "CLEC9A",
+"LOX1" = "OLR1",
+"CLEC2" = "CLEC1B",
+"MRC1.1" = "MRC1",
+"CLEC2D.1" = "CLEC2D",
+"L-Selectin" = "SELL",
+"P-Selectin" = "SELP",
+"E-Selectin" = "SELE",
+"ACE2.1" = "ACE2",
+"Neuropilin-1" = "NRP1"
+)
+```
 
 ```{r ranking-execute}
-# ランキング実行
-glycan_ranking <- score_glycans(total5)
+# Execute ranking
+glycan_ranking <- score_glycans(total5, cancer_cells, immune_cells, glycan_gene_mapping,
+    weight_cell_spec_rna = 9, weight_expr_level_rna = 7, weight_cell_spec_glycan = 6, weight_binding_level = 7)
 
-# 上位10個のglycanを表示
+# Display top 10 glycans
 head(glycan_ranking, 10)
+
+glycan_ranking %>% write.csv("data/glycan_ranking.csv", row.names = FALSE)
 ```
 
-## 可視化
+## Visualization
 
 ```{r ranking-plot}
-# スコア内訳の可視化
-plot_top_glycans(glycan_ranking, 10)
+# Visualize score breakdown
+g_plot <- plot_top_glycans(glycan_ranking, 10)
+ggsave(g_plot, filename="data/glycan_ranking_top10.png", width = 10, height = 6, dpi = 300)
 ```
