@@ -9,7 +9,7 @@ format:
 ---
 
 
-```{r libraries}
+```{r import-libraries}
 library(Seurat)
 library(pheatmap)
 library(tidyverse)
