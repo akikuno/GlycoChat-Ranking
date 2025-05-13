@@ -1,26 +1,13 @@
----
-title: "Glycan Specificity Analysis in the PDAC Dataset"
-author: "Akihiro Kuno"
-date: "2025-04-18"
-format: 
-    html:
-        toc: true
-        code-fold: true
----
-
-
-```{r import-libraries}
+## ----import-libraries---------------------------------------------------------
 library(Seurat)
 library(tidyverse)
-```
 
-```{r load-data}
+
+## ----load-data----------------------------------------------------------------
 load("data/pdac_ctype.RData")
-```
 
-## Expression Specificity Functions
 
-```{r specificity-functions}
+## ----specificity-functions----------------------------------------------------
 
 # Calculate mean expression/glycan per cell type
 calculate_mean_by_celltype <- function(values) {
@@ -90,11 +77,9 @@ identify_top_cell_type <- function(values_by_celltype) {
         max_to_second_ratio = max_to_second_ratio
     ))
 }
-```
 
-## Define Functions to Calculate RNA Expression and Glycan glycan Scores
 
-```{r scoreing}
+## ----scoreing-----------------------------------------------------------------
 
 # RNA score calculation for immune cells
 calculate_rna_scores <- function(gene_vec, cell_types, immune_cells) {
@@ -122,11 +107,9 @@ calculate_glycan_scores <- function(glycan_vec, cell_types, cancer_cells) {
     glycan_score <- log1p(mean(cancer_values, na.rm = TRUE))
     return(list(spec_score = spec_score, glycan_score = glycan_score, by_celltype = glycan_by_type))
 }
-```
 
-## Glycan Ranking Function
 
-```{r glycan-ranking}
+## ----glycan-ranking-----------------------------------------------------------
 # Normalize vector to 0–1
 min_max_normalize <- function(x) {
     rng <- range(x, na.rm = TRUE)
@@ -232,9 +215,9 @@ score_glycans <- function(seurat_obj, cancer_cells, immune_cells, glycan_gene_ma
     
     return(results)
 }
-```
 
-```{r plot}
+
+## ----plot---------------------------------------------------------------------
 # Bar plot of component scores for top glycans
 plot_top_glycans <- function(glycan_ranking, n = 10) {
     n <- min(n, nrow(glycan_ranking))
@@ -254,12 +237,9 @@ plot_top_glycans <- function(glycan_ranking, n = 10) {
                         labels = c("Glycan glycan Level", "Glycan Cell Specificity",
                         "RNA Expression Level", "RNA Cell Specificity"))
 }
-```
 
 
-## Execute Ranking
-
-```{r ranking-setup}
+## ----ranking-setup------------------------------------------------------------
 # Classification of cell types (adjust according to actual data)
 cancer_cells <- c("Classical", "Basal-like", "Intermediate")
 
@@ -291,9 +271,9 @@ glycan_gene_mapping <- c(
 "ACE2.1" = "ACE2",
 "Neuropilin-1" = "NRP1"
 )
-```
 
-```{r ranking-execute}
+
+## ----ranking-execute----------------------------------------------------------
 # Execute ranking
 glycan_ranking <- score_glycans(total5, cancer_cells, immune_cells, glycan_gene_mapping,
     weight_rna_specificity = 9, weight_rna_level = 1, weight_glycan_specificity = 5, weight_glycan_level = 6)
@@ -302,17 +282,14 @@ glycan_ranking <- score_glycans(total5, cancer_cells, immune_cells, glycan_gene_
 head(glycan_ranking, 10)
 
 glycan_ranking %>% write.csv("data/glycan_ranking.csv", row.names = FALSE)
-```
 
-## Visualization
 
-```{r ranking-plot}
+## ----ranking-plot-------------------------------------------------------------
 # Visualize score breakdown
 g_plot <- plot_top_glycans(glycan_ranking, 10)
 ggsave(g_plot, filename="data/glycan_ranking_top10.png", width = 10, height = 6, dpi = 300)
-```
 
 
-```{r export-to-r}
+## ----export-to-r--------------------------------------------------------------
 knitr::purl("pdac_ctype.qmd")
-```
+
