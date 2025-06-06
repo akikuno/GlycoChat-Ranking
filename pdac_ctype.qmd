@@ -2,7 +2,7 @@
 title: "Glycan Specificity Analysis in the PDAC Dataset"
 author: "Akihiro Kuno"
 date: "2025-04-18"
-format: 
+format:
     html:
         toc: true
         code-fold: true
@@ -32,7 +32,7 @@ calculate_mean_by_celltype <- function(values) {
 calculate_specificity <- function(values_by_celltype) {
     # Basic coefficient of variation
     cv <- sd(values_by_celltype, na.rm = TRUE) / mean(values_by_celltype, na.rm = TRUE)
-    
+
     sorted_values <- sort(values_by_celltype, decreasing = TRUE, na.last = TRUE)
 
     # Calculate the ratio of the maximum value to the second highest value
@@ -43,7 +43,7 @@ calculate_specificity <- function(values_by_celltype) {
     } else {
         Inf
     }
-    
+
     return(cv * (0.3 + 0.7 * min(max_to_second / 5, 1)))
 }
 
@@ -63,7 +63,7 @@ calculate_cancer_specificity <- function(values_by_celltype, cancer_cells) {
 identify_top_cell_type <- function(values_by_celltype) {
     # Extract values without NA
     valid_values <- values_by_celltype[!is.na(values_by_celltype)]
-    
+
     # If no valid values exist
     if (length(valid_values) == 0) {
         return(list(
@@ -75,7 +75,7 @@ identify_top_cell_type <- function(values_by_celltype) {
     # Cell type with the maximum value
     max_cell_type <- names(values_by_celltype)[which.max(values_by_celltype)]
     max_value <- max(values_by_celltype, na.rm = TRUE)
-    
+
     # Ratio to the second highest value
     sorted_values <- sort(values_by_celltype, decreasing = TRUE, na.last = TRUE)
     if (length(sorted_values) >= 2 && !is.na(sorted_values[2])) {
@@ -83,7 +83,7 @@ identify_top_cell_type <- function(values_by_celltype) {
     } else {
         max_to_second_ratio <- Inf
     }
-    
+
     return(list(
         top_cell_type = max_cell_type,
         max_value = max_value,
@@ -136,19 +136,19 @@ min_max_normalize <- function(x) {
 
 # Main function: Score Glycans
 score_glycans <- function(seurat_obj, cancer_cells, immune_cells, glycan_gene_mapping, weight_rna_specificity = 9, weight_rna_level = 7, weight_glycan_specificity = 6, weight_glycan_level = 7) {
-    
+
     # Get cell type information
     cell_types <- as.character(Idents(seurat_obj))
-    
+
     # Get data
     rna_data <- seurat_obj[["RNA"]]$data
     glycan_data <- seurat_obj[["glycan"]]$data
     glycan_list <- rownames(glycan_data)
-    
+
     # Data frame to store results
     results <- data.frame(
-        glycan = glycan_list, 
-        rna_specificity_score = 0, 
+        glycan = glycan_list,
+        rna_specificity_score = 0,
         rna_expression_score = 0,
         glycan_specificity_score = 0,
         glycan_binding_score = 0,
@@ -157,7 +157,7 @@ score_glycans <- function(seurat_obj, cancer_cells, immune_cells, glycan_gene_ma
         top_immune_cell_type_rna = "",
         stringsAsFactors = FALSE
     )
-    
+
     # Calculate scores for each glycan
     for (i in seq_along(glycan_list)) {
         glycan <- glycan_list[i]
@@ -166,48 +166,48 @@ score_glycans <- function(seurat_obj, cancer_cells, immune_cells, glycan_gene_ma
         names(glycan_glycan) <- cell_types
         # Calculate glycan glycan by cell type
         glycan_by_celltype <- calculate_mean_by_celltype(glycan_glycan)
-        
+
         # Identify the cell type with the highest glycan
         top_glycan_info <- identify_top_cell_type(glycan_by_celltype[cancer_cells])
-        
+
         # Calculate glycan scores
         glycan_scores <- calculate_glycan_scores(glycan_glycan, cell_types, cancer_cells)
-        
+
         # Calculate RNA expression scores for the corresponding gene
         gene_for_glycan <- glycan_gene_mapping[[glycan]] # Replace with actual mapping
         top_rna_info <- list(top_cell_type = NA, max_to_second_ratio = NA)
-        
+
         # Check if the corresponding gene exists in the RNA assay
         if (gene_for_glycan %in% rownames(rna_data)) {
             gene_expr <- rna_data[gene_for_glycan, ]
             names(gene_expr) <- cell_types
             # Calculate gene expression by cell type
             expr_by_celltype <- calculate_mean_by_celltype(gene_expr)
-            
+
             # Identify the cell type with the highest expression
             top_rna_info <- identify_top_cell_type(expr_by_celltype[immune_cells])
-            
+
             rna_scores <- calculate_rna_scores(gene_expr, cell_types, immune_cells)
-            
+
             results$rna_specificity_score[i] <- rna_scores$spec_score
             results$rna_expression_score[i] <- rna_scores$expr_score
         }
-        
+
         # Store glycan scores
         results$glycan_specificity_score[i] <- glycan_scores$spec_score
         results$glycan_binding_score[i] <- glycan_scores$glycan_score
-        
+
         # Store single-cell type specificity information
         results$top_cancer_cell_type_glycan[i] <- top_glycan_info$top_cell_type
         results$top_immune_cell_type_rna[i] <- ifelse(is.na(top_rna_info$top_cell_type), "", top_rna_info$top_cell_type)
-        
+
         results$total_score[i] <-
-            results$rna_specificity_score[i] + 
-            results$rna_expression_score[i] + 
-            results$glycan_specificity_score[i] + 
+            results$rna_specificity_score[i] +
+            results$rna_expression_score[i] +
+            results$glycan_specificity_score[i] +
             results$glycan_binding_score[i]
     }
-    
+
     # Normalize each component score using min-max normalization
     results <- results %>%
         mutate(
@@ -221,7 +221,7 @@ score_glycans <- function(seurat_obj, cancer_cells, immune_cells, glycan_gene_ma
     weights <- c(rna_spec = weight_rna_specificity, rna_expr = weight_rna_level, glycan_spec = weight_glycan_specificity, glycan_glycan = weight_glycan_level)
     weights <- weights / sum(weights)
 
-    results$total_score <- 
+    results$total_score <-
         weights["rna_spec"] * results$rna_specificity_score +
         weights["rna_expr"] * results$rna_expression_score +
         weights["glycan_spec"] * results$glycan_specificity_score +
@@ -229,7 +229,7 @@ score_glycans <- function(seurat_obj, cancer_cells, immune_cells, glycan_gene_ma
 
     # Sort by total score in descending order
     results <- results %>% arrange(desc(total_score))
-    
+
     return(results)
 }
 ```
@@ -266,30 +266,30 @@ cancer_cells <- c("Classical", "Basal-like", "Intermediate")
 immune_cells <- c("Naïve CD4+Tcell", "Effector/Memory CD4+Tcell", "Effector/Memory CD8+Tcell", "Exhausted CD8+Tcell", "M1-like TAM", "M2-like TAM", "MDSC", "cDC2", "B-cell", "pDC", "Mast cell", "Endothelial cell", "myCAF", "iCAF")
 
 glycan_gene_mapping <- c(
-"ASGR1.1" = "ASGR1",
-"ASGR2.1" = "ASGR2",
-"Langerin" = "CD207",
-"Prolectin" = "CLEC17A",
-"LSECtin" = "CLEC4G",
-"DCSIGNR" = "CD209L",
-"MINCLE" = "CLEC4E",
-"DCIR" = "CLEC4A",
-"Dectin1" = "CLEC7A",
-"Dectin2" = "CLEC6A",
-"Dectin3" = "CLEC4D",
-"MDL1" = "CLEC5A",
-"CD301" = "CLEC10A",
-"DCAL2" = "CLEC12A",
-"CD370" = "CLEC9A",
-"LOX1" = "OLR1",
-"CLEC2" = "CLEC1B",
-"MRC1.1" = "MRC1",
-"CLEC2D.1" = "CLEC2D",
-"L-Selectin" = "SELL",
-"P-Selectin" = "SELP",
-"E-Selectin" = "SELE",
-"ACE2.1" = "ACE2",
-"Neuropilin-1" = "NRP1"
+    "ASGR1.1" = "ASGR1",
+    "ASGR2.1" = "ASGR2",
+    "Langerin" = "CD207",
+    "Prolectin" = "CLEC17A",
+    "LSECtin" = "CLEC4G",
+    "DCSIGNR" = "CD209L",
+    "MINCLE" = "CLEC4E",
+    "DCIR" = "CLEC4A",
+    "Dectin1" = "CLEC7A",
+    "Dectin2" = "CLEC6A",
+    "Dectin3" = "CLEC4D",
+    "MDL1" = "CLEC5A",
+    "CD301" = "CLEC10A",
+    "DCAL2" = "CLEC12A",
+    "CD370" = "CLEC9A",
+    "LOX1" = "OLR1",
+    "CLEC2" = "CLEC1B",
+    "MRC1.1" = "MRC1",
+    "CLEC2D.1" = "CLEC2D",
+    "L-Selectin" = "SELL",
+    "P-Selectin" = "SELP",
+    "E-Selectin" = "SELE",
+    "ACE2.1" = "ACE2",
+    "Neuropilin-1" = "NRP1"
 )
 ```
 
