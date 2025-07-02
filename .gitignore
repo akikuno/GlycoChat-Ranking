@@ -1,5 +1,6 @@
 data/*
-
+CLAUDE.md
+tmp*
 # History files
 .Rhistory
 .Rapp.history

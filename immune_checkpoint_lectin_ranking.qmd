@@ -314,5 +314,5 @@ ggsave(g_plot, filename="data/glycan_ranking_top10.png", width = 10, height = 6,
 
 
 ```{r export-to-r}
-knitr::purl("pdac_ctype.qmd")
+knitr::purl("immune_checkpoint_lectin_ranking.qmd")
 ```
