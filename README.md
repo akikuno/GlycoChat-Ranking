@@ -32,13 +32,6 @@ The analysis employs a sophisticated scoring system that evaluates:
 - Customizable weighting system for different scoring components
 - Identifies top-expressing cell types for both RNA and glycan data
 
-## Key Findings
-
-The analysis identifies several lectins with strong cell-type specificity:
-- **P-Selectin (SELP)**: Shows high specificity for certain immune cell populations
-- **Langerin (CD207)**: Demonstrates specific binding patterns relevant to immune responses
-- **LSECtin (CLEC4G)**: Exhibits cancer cell-specific interactions
-
 ## Installation
 
 ```bash
